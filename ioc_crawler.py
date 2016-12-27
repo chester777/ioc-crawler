@@ -3,6 +3,9 @@ import BeautifulSoup
 import re
 import sqlite3
 import os
+import datetime
+from xml.etree.ElementTree import Element, dump
+from xml.etree.ElementTree import ElementTree
 
 ###################################################################
 # Global Variables : for crawling                                 #
@@ -16,13 +19,21 @@ REG_EXP = {
 	}
 ###################################################################
 
+###################################################################
+# Global Variables : for ioc making                               #
+###################################################################
+
+IOC_STORED_PATH = "./iocs/"
+
+###################################################################
+
 def getHTML(url) : 
 	for user_agent in USER_AGENTS :
 		req = urllib2.Request(url)
 		req.add_header('User-agent', user_agent)
 		response = urllib2.urlopen(req)
 
-		# add to handle 503 error
+		# add to handle 503 error later
 		page = response.read()
 		return page
 
@@ -33,9 +44,7 @@ def reportCrawling() :
 		page = getHTML(url)
 
 		bs = BeautifulSoup.BeautifulSoup(page)
-		temp = bs.findAll('table', attrs={'class':'table table-striped'})
-
-		reports = temp[0]
+		reports = bs.find('table', attrs={'class':'table table-striped'})
 		reports = reports.findAll('tr')
 
 		for report in reports :
@@ -69,7 +78,7 @@ def dbHandler(query) :
 
 	return rows
 
-def makeIOC() :
+def reportParsing() :
 	print "Start to make indicator of compromise of each report..."
 
 	query = "SELECT reportURL FROM reports WHERE makeIocFlag = 'false'"
@@ -78,13 +87,108 @@ def makeIOC() :
 	for url in BASE_URLS :
 		for row in rows :
 			page = getHTML(url + row[0])
-			print page
+			
+			bs = BeautifulSoup.BeautifulSoup(page)
 
+			# File Details
+			fileDetails = {}
+			temp = bs.find('section', attrs={'id':'file'})
+			trs = temp.findAll('tr')
+			for tr in trs :
+				th = tr.find('th')
+				td = tr.find('td')
+				
+				if len(th.text) > 0 :
+					fileDetails[th.text.replace(' ', '')] = td.text
+
+			# add static analysis info later
+			# add behavior analysis info later
+			# add network analysis info later
+			# add dropped files analysis info later
+
+			result = makeIOC(row, fileDetails)
+
+			if result == True :
+				query = "UPDATE reports SET makeIocFlag = 'true' WHERE reportURL = '" + row[0] + "'"
+				dbHandler(query)
 	return
 
+def makeIOC(row, fileDetails) :
+
+	now = datetime.datetime.now()
+
+	ioc = Element("ioc")
+	ioc.attrib["xmlns:xsi"] = "http://www.w3.org/2001/XMLSchema-instance"
+	ioc.attrib["xmlns:xsd"] = "http://www.w3.org/2001/XMLSchema"
+	ioc.attrib["last-modified"] = str(now)
+	ioc.attrib["xmlns"] = "http://schemas.mandiant.com/2010/ioc"
+
+	short_description = Element("short_description")
+	authored_date = Element("authored_date")
+	links = Element("links")
+	definition = Element("definition")
+
+	indicator = Element("Indicator")
+	indicator.attrib["operator"] = "OR"
+
+	indicatorItem = Element("IndicatorItem")
+	indicatorItem.attrib["condition"] = "is"
+	context_md5sum = Element("Context")
+	context_md5sum.attrib["document"] = "FileItem"
+	context_md5sum.attrib["search"] = "FileItem/Md5sum"
+	context_md5sum.attrib["type"] = "mir"
+	context_type = Element("Context")
+	context_type.attrib["type"] = "md5"
+	context_type.text = fileDetails["MD5"]
+
+	indicatorItem.append(context_md5sum)
+	indicatorItem.append(context_type)
+	indicator.append(indicatorItem)
+
+	indicatorItem = Element("IndicatorItem")
+	indicatorItem.attrib["condition"] = "contains"
+	context_fileName = Element("Context")
+	context_fileName.attrib["document"] = "FileItem"
+	context_fileName.attrib["search"] = "FileItem/FileName"
+	context_fileName.attrib["type"] = "mir"
+	context_type = Element("Context")
+	context_type.attrib["type"] = "string"
+	context_type.text = fileDetails["FileName"]
+
+	indicatorItem.append(context_fileName)
+	indicatorItem.append(context_type)
+	indicator.append(indicatorItem)
+
+	indicatorItem = Element("IndicatorItem")
+	indicatorItem.attrib["condition"] = "is"
+	context_size = Element("Context")
+	context_size.attrib["document"] = "FileItem"
+	context_size.attrib["search"] = "FileItem/SizeInBytes"
+	context_size.attrib["type"] = "mir"
+	context_type = Element("Context")
+	context_type.attrib["type"] = "int"
+	context_type.text = fileDetails["FileSize"].split(" ")[0]
+
+	indicatorItem.append(context_size)
+	indicatorItem.append(context_type)
+	indicator.append(indicatorItem)
+
+	definition.append(indicator)
+
+	ioc.append(definition)
+	ioc.append(short_description)
+	ioc.append(authored_date)
+	ioc.append(links)
+
+	path = IOC_STORED_PATH + row[0] + ".ioc"
+
+	ElementTree(ioc).write(path)
+
+	return True
+
 def main() :
-	reportCrawling()
-	#makeIOC()
-	
+	#reportCrawling()
+	reportParsing()
+
 if __name__ == '__main__':
 	main()
